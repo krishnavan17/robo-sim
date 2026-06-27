@@ -71,6 +71,88 @@ python -c "import numpy, cv2, ultralytics, rclpy; print('pip + ROS ok')"
 In standalone mode the script runs under the venv's `python`, with `SimulationApp`, your
 pip dependencies, and ROS 2 all importable. Extra arguments are forwarded to the script.
 
+## OpenVLA data collection (`vla_collect/`)
+
+A self-contained pipeline that drives a **6-axis UR10 arm** on a table to perform a simple
+language-conditioned task — *"place the {colour} cube on the red rectangle"* — and records
+each rollout in the shape **[OpenVLA](https://openvla.github.io/)** expects for fine-tuning.
+
+The scene spawns four coloured cubes (blue, green, yellow, red) at random positions plus a
+red rectangular target pad. A scripted **RMPFlow pick-and-place controller** (NVIDIA's
+bundled UR10 solver + surface gripper) executes the task while a fixed third-person camera
+captures a 224×224 RGB observation each step. Because the policy is given the *colour* in
+the instruction and several cubes are present, the resulting dataset teaches colour
+grounding, not just "pick the only object".
+
+### Collect
+
+```bash
+./run_collect.sh                          # 50 successful episodes -> data/raw
+./run_collect.sh --num-episodes 200       # more data
+./run_collect.sh --gui                     # watch in the viewport
+./run_collect.sh --keep-failures           # also keep rollouts that miss the pad
+```
+
+Each episode is written as `data/raw/episode_NNNNN.npz` (+ a `.json` sidecar):
+
+| Array     | Shape         | Meaning                                                        |
+|-----------|---------------|----------------------------------------------------------------|
+| `images`  | `[T,224,224,3]` uint8 | third-person RGB observation per step                 |
+| `states`  | `[T,7]` float32 | proprio: end-effector `x,y,z, roll,pitch,yaw, gripper`      |
+| `actions` | `[T,7]` float32 | 7-DoF action: Δ end-effector `dx..dyaw` + absolute gripper |
+
+Gripper convention: **1.0 = closed/grasping, 0.0 = open**. By default only successful
+rollouts (cube ends on the pad) are saved.
+
+### Inspect
+
+```bash
+.venv/bin/python tools/inspect_dataset.py data/raw                       # summary
+.venv/bin/python tools/inspect_dataset.py data/raw --contact-sheet s.png  # eyeball frames
+./launch.sh tools/preview_camera.py --out /tmp/preview.png                # single frame (framing check)
+```
+
+### Convert to RLDS for OpenVLA
+
+OpenVLA fine-tunes on RLDS/TFDS datasets. TensorFlow is heavy and not in
+`requirements.txt`, so install it only when converting:
+
+```bash
+.venv/bin/pip install "tensorflow-cpu>=2.15" "tensorflow-datasets>=4.9"
+.venv/bin/python tools/convert_rlds.py --data-dir data/raw --out-dir data/rlds
+```
+
+This writes `data/rlds/robo_pickplace/1.0.0/`, loadable in the OpenVLA fine-tune pipeline
+via `tfds.builder_from_directory(...)`. The RLDS steps carry `observation.image`,
+`observation.state`, `action`, and `language_instruction` — the fields OpenVLA reads.
+
+### Layout
+
+| Path                        | Purpose                                                          |
+|-----------------------------|------------------------------------------------------------------|
+| `vla_collect/config.py`     | All tunables: cubes, workspace, camera, action space, paths.     |
+| `vla_collect/scene.py`      | Builds the world (table, UR10, pad, cubes, camera, lighting).    |
+| `vla_collect/recorder.py`   | Pure-numpy episode buffer + on-disk `.npz`/`.json` format.       |
+| `vla_collect/collect.py`    | Standalone Isaac Sim entry point that runs the scripted rollouts.|
+| `tools/inspect_dataset.py`  | Summary + contact sheet of a recorded run.                       |
+| `tools/convert_rlds.py`     | Recorded episodes → RLDS/TFDS for OpenVLA.                        |
+| `tools/preview_camera.py`   | Dump one observation frame to check camera framing/lighting.     |
+| `run_collect.sh`            | Wrapper over `launch.sh` for the collection script.              |
+
+### Rendering notes (lessons baked into the code)
+
+Getting clean synthetic frames out of Isaac Sim 6.0.0 took some tuning, all handled
+automatically by the code:
+
+- **Render mode** is set to `RaytracedLighting` at `SimulationApp` construction. The
+  default `RealTimePathTracing` accumulates samples across frames, so per-step captures of
+  a moving scene look smeared. (It can't be changed via carb settings afterwards.)
+- **Lighting** — the UR10 asset ships a ~9 000 000-intensity light on its end-effector and
+  the default ground plane a strong sphere light; both blow the close-up camera out to pure
+  white. `scene.tame_scene_lights()` scales every light down, then a soft dome adds fill.
+- **Depth of field** is disabled (`fStop = 0`) for a sharp pinhole image, and the camera
+  renders at 512² then downsamples to 224² (rendering directly at 224 trips DLSS's blur).
+
 ## Scripts
 
 | File              | Purpose                                                                       |
@@ -79,7 +161,8 @@ pip dependencies, and ROS 2 all importable. Extra arguments are forwarded to the
 | `install_gpu.sh`  | NVIDIA GPU driver install only — called by `install.sh`, or run standalone (`--check` to audit). WSL-aware: verifies passthrough instead of installing on WSL. |
 | `setup_venv.sh`   | Create the `.venv`, install `requirements.txt`, and wire Isaac Sim + ROS 2 into it. |
 | `launch.sh`       | Activate the venv and start Isaac Sim (GUI) or run a standalone Python script. |
-| `requirements.txt`| Pip dependencies only (numpy, opencv-python, ultralytics). **Not** Isaac/ROS. |
+| `run_collect.sh`  | Run the OpenVLA pick-and-place data collection (wrapper over `launch.sh`). See [OpenVLA data collection](#openvla-data-collection-vla_collect). |
+| `requirements.txt`| Pip dependencies only (numpy, opencv-python, ultralytics, pillow). **Not** Isaac/ROS. |
 
 ## How the venv works
 
