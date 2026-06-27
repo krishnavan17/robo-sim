@@ -1,0 +1,38 @@
+# =============================================================================
+# robo-sim — Python (pip) dependencies
+# =============================================================================
+# Target interpreter: Python 3.12 (matches Isaac Sim 6.0.0 + ROS 2 Jazzy)
+#
+# IMPORTANT — read before installing:
+#   NVIDIA Isaac Sim and ROS 2 are NOT on PyPI and are NOT installed by this
+#   file. They are already installed on this machine:
+#       * Isaac Sim 6.0.0   -> standalone install rooted at /home/user
+#                              (bundled python via ~/python.sh / ~/setup_python_env.sh)
+#       * ROS 2 Jazzy       -> /opt/ros/jazzy  (source /opt/ros/jazzy/setup.bash)
+#   The modules they provide (isaacsim, omni, carb, pxr, rclpy, cv_bridge,
+#   sensor_msgs, geometry_msgs, std_msgs, ...) are made visible to the venv by
+#   `setup_venv.sh`, which wires their paths into the venv's activate script.
+#   DO NOT add isaacsim / omni / rclpy / ros2 packages here — they would fail
+#   or shadow the working system installs.
+#
+# Create the environment with:   ./setup_venv.sh
+# =============================================================================
+
+# --- core numerics -----------------------------------------------------------
+# At RUNTIME Isaac Sim's bundled numpy (2.4.6 in kit/python) takes precedence
+# via the isaacsim.pth entry, so this pip copy is mostly a fallback for tools
+# run outside an Isaac session. Kept compatible with Isaac's 2.x to avoid any
+# ABI mismatch against Isaac's compiled extensions. (Must be 2.x: ultralytics
+# >=8.4 and Isaac both require numpy 2.)
+numpy>=2.3,<3
+
+# --- computer vision ---------------------------------------------------------
+# cv2 — used by ai_node_*.py for image processing / drawing.
+opencv-python==4.11.0.86
+
+# --- perception / detection --------------------------------------------------
+# YOLO models used by the AI nodes (ai_node_yolo_opencv.py, ai_node_final_stable.py).
+# Pulls in torch/torchvision automatically.
+# Must be >=8.4.0: earlier releases cap numpy<2.0.0, which conflicts with the
+# numpy 2.3.1 that Isaac Sim 6.0.0 bundles. 8.4.x drops that cap.
+ultralytics>=8.4.0
