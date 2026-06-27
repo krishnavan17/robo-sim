@@ -34,7 +34,7 @@ set -euo pipefail
 # --- tunables ----------------------------------------------------------------
 ISAAC_SIM_ROOT="${ISAAC_SIM_ROOT:-$HOME}"
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
-NVIDIA_DRIVER="${NVIDIA_DRIVER:-595}"
+NVIDIA_DRIVER="${NVIDIA_DRIVER:-595}"   # forwarded to install_gpu.sh
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 ISAAC_VERSION="6.0.0"
 ISAAC_ZIP="${ISAAC_ZIP:-}"
@@ -66,19 +66,22 @@ if [ -f /etc/os-release ]; then . /etc/os-release; fi
 [ "$(id -u)" -ne 0 ] || die "Run as a normal user (the script uses sudo where needed), not root."
 command -v sudo >/dev/null || die "sudo is required."
 
+# On WSL the GPU comes from the Windows host driver; a Linux driver install is
+# wrong, so the driver stage runs install_gpu.sh's WSL-aware path instead of
+# apt-installing. (install_gpu.sh detects WSL itself and only verifies passthrough.)
+is_wsl() { grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null; }
+
 # =============================================================================
-# 1. NVIDIA driver
+# 1. NVIDIA driver  (delegated to install_gpu.sh)
 # =============================================================================
 if [ "$DO_DRIVER" -eq 1 ]; then
-    if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
-        log "NVIDIA driver already present:"
-        nvidia-smi --query-gpu=name,driver_version --format=csv,noheader || true
+    if is_wsl; then
+        log "WSL detected — verifying GPU passthrough instead of installing a Linux driver"
+    fi
+    if [ -x "$REPO_DIR/install_gpu.sh" ]; then
+        NVIDIA_DRIVER="$NVIDIA_DRIVER" "$REPO_DIR/install_gpu.sh"
     else
-        log "Installing NVIDIA driver (nvidia-driver-${NVIDIA_DRIVER})"
-        sudo apt-get update
-        sudo apt-get install -y "nvidia-driver-${NVIDIA_DRIVER}" || \
-            warn "Driver package nvidia-driver-${NVIDIA_DRIVER} not found; try 'ubuntu-drivers devices' to pick one."
-        warn "A REBOOT is required to load the new NVIDIA driver. Re-run with --no-driver afterwards."
+        die "install_gpu.sh not found/executable in $REPO_DIR (run with --no-driver to skip)."
     fi
 else
     log "Skipping NVIDIA driver (--no-driver)"
