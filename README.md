@@ -20,6 +20,9 @@ This repo targets — and its `install.sh` reproduces — the following system:
 Isaac Sim and ROS 2 are **not** on PyPI and are **not** pip-installed. They are installed
 at the system level and then *exposed* to the venv (see [How the venv works](#how-the-venv-works)).
 
+> Running under WSL2? See [WSL2 support](#wsl2-support) — the GPU driver step works
+> differently and the scripts handle it automatically.
+
 ## Quick start
 
 ### Fresh machine (full provision)
@@ -33,6 +36,8 @@ then creates the Python venv. Stages can be skipped individually:
 
 ```bash
 ./install.sh --no-driver    # NVIDIA driver already present (e.g. after a reboot)
+./install_gpu.sh            # install the GPU driver on its own (then reboot)
+./install_gpu.sh --check    # audit the current driver/GPU, install nothing
 ./install.sh --no-ros       # ROS 2 already installed
 ./install.sh --no-isaac     # Isaac Sim already extracted
 ./install.sh --no-venv      # don't (re)create the venv
@@ -70,7 +75,8 @@ pip dependencies, and ROS 2 all importable. Extra arguments are forwarded to the
 
 | File              | Purpose                                                                       |
 |-------------------|-------------------------------------------------------------------------------|
-| `install.sh`      | Provision a fresh machine to match the reference environment (driver, ROS 2, Isaac Sim, venv). Idempotent. |
+| `install.sh`      | Provision a fresh machine to match the reference environment (GPU driver, ROS 2, Isaac Sim, venv). Idempotent. |
+| `install_gpu.sh`  | NVIDIA GPU driver install only — called by `install.sh`, or run standalone (`--check` to audit). WSL-aware: verifies passthrough instead of installing on WSL. |
 | `setup_venv.sh`   | Create the `.venv`, install `requirements.txt`, and wire Isaac Sim + ROS 2 into it. |
 | `launch.sh`       | Activate the venv and start Isaac Sim (GUI) or run a standalone Python script. |
 | `requirements.txt`| Pip dependencies only (numpy, opencv-python, ultralytics). **Not** Isaac/ROS. |
@@ -104,10 +110,44 @@ All scripts honor these environment variables (with sensible defaults):
 | `ISAAC_ZIP`      | *(download)*                 | `install.sh`             |
 | `ISAAC_ZIP_URL`  | NVIDIA download URL          | `install.sh`             |
 
+## WSL2 support
+
+The scripts run under **WSL2** (Ubuntu 24.04) with one important difference: the GPU.
+
+Under WSL you must **not** install a Linux NVIDIA driver. The GPU is provided by the
+**Windows host driver** and exposed to the distro via `/dev/dxg`; installing a Linux
+driver inside WSL breaks that passthrough. Both `install.sh` and `install_gpu.sh` detect
+WSL (via `/proc/sys/kernel/osrelease`) and automatically switch the driver stage to a
+*verify-only* path — they check that `nvidia-smi` passthrough works instead of running
+`apt install nvidia-driver-*`.
+
+**Setup on WSL2:**
+
+1. Install the latest NVIDIA driver on **Windows** (it includes WSL GPU support). Nothing
+   to install inside WSL for the GPU.
+2. Ensure you are on **WSL2** (not WSL1) with a recent kernel.
+3. Run the installer normally — the driver stage will just verify passthrough:
+
+   ```bash
+   ./install.sh                 # GPU stage auto-detects WSL and only verifies nvidia-smi
+   ./install_gpu.sh --check     # confirm GPU passthrough on its own
+   ```
+
+| Piece                      | WSL2 status                                                        |
+|----------------------------|--------------------------------------------------------------------|
+| Bash scripts, ROS 2, venv  | ✅ Work unchanged                                                   |
+| GPU driver                 | ⚠️ Installed on **Windows**, not in WSL (scripts verify-only)       |
+| Isaac Sim compute / RTX    | ✅ Works on WSL2 with a recent Windows driver                       |
+| Isaac Sim **GUI**          | ⚠️ Flaky through WSLg — prefer headless **streaming** or standalone Python |
+
+On WSL, prefer headless usage — `isaac-sim.streaming.sh` or `./launch.sh script.py` — over
+the GUI (`./launch.sh`), since RTX rendering through WSLg is unreliable.
+
 ## Notes
 
 - The NVIDIA driver install requires a **reboot** before the GPU is usable; re-run
-  `./install.sh --no-driver` afterwards to continue.
+  `./install.sh --no-driver` afterwards to continue. *(Native Linux only — on WSL the
+  driver lives on the Windows host; see [WSL2 support](#wsl2-support).)*
 - Isaac Sim modules (`isaacsim`, `omni`, `pxr`) require a GPU/display session to import
   fully; `numpy`/`cv2`/`ultralytics`/`rclpy` can be verified without one.
 - The Isaac Sim download URL may be gated or change; if the download fails, fetch the zip
