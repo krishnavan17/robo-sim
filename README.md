@@ -153,6 +153,49 @@ automatically by the code:
 - **Depth of field** is disabled (`fStop = 0`) for a sharp pinhole image, and the camera
   renders at 512² then downsamples to 224² (rendering directly at 224 trips DLSS's blur).
 
+## ROS 2 control (`vla_control/`)
+
+Drives the **same** UR10 pick-and-place world that `vla_collect` records, but
+instead of replaying a scripted demonstration it executes **7-DoF actions
+received over ROS 2** — the exact action vector OpenVLA emits
+(`[dx, dy, dz, droll, dpitch, dyaw, gripper]`, world-frame deltas + absolute
+gripper). This is the runtime counterpart to the data-collection pipeline:
+collect demos → fine-tune OpenVLA → publish the model's actions here.
+
+For now the action source is a **teleop node** that accepts user input in that
+same format; a trained policy is a drop-in replacement (publish its prediction
+to the same `/vla/action` topic — nothing else changes).
+
+```bash
+# Terminal 1 — boot Isaac Sim + the control node (subscribes to /vla/action)
+./run_control.sh --color blue       # task: "place the blue cube on the red rectangle"
+./run_control.sh --gui               # watch it in the viewport
+
+# Terminal 2 — the action source (no GPU needed; same ROS_DOMAIN_ID)
+./run_teleop.sh                      # type "0 0 -0.02 0 0 0 0", "grip", "w", "reset green", "help"
+```
+
+The control node publishes the live observation back out — `/vla/observation/image`
+(`sensor_msgs/Image`, rgb8 224×224), `/vla/observation/state` (proprio `[7]`),
+`/vla/observation/depth` (`sensor_msgs/Image`, 32FC1 metric depth at the 512×512
+render resolution), `/vla/observation/pointcloud` (`sensor_msgs/PointCloud2`, xyz
+in the world frame), and a latched `/vla/instruction` — so the action source
+closes the loop exactly as it would for the trained model. The depth + pointcloud
+streams let you train depth-/geometry-conditioned models off the same simulator;
+toggle them with `enable_depth` / `enable_pointcloud` in `vla_collect/config.py`.
+See [`vla_control/WALKTHROUGH.md`](vla_control/WALKTHROUGH.md) for the full
+architecture and how to swap in the OpenVLA policy.
+
+| Path                        | Purpose                                                          |
+|-----------------------------|------------------------------------------------------------------|
+| `vla_control/ros_interface.py` | Topic names + Float32MultiArray/Image (un)pack helpers (shared contract). |
+| `vla_control/config.py`     | Control-loop knobs; reuses `vla_collect`'s world/camera/action.  |
+| `vla_control/control_node.py` | Standalone Isaac Sim entry point: boot sim, run the control loop. |
+| `vla_control/controller.py` | The rclpy node + RMPFlow servo loop (integrates Δ actions).      |
+| `vla_control/teleop_node.py`| Reads 7-DoF actions from stdin and publishes them (VLA stand-in).|
+| `run_control.sh`            | Wrapper over `launch.sh` for the control node.                   |
+| `run_teleop.sh`             | Run the teleop action source under the venv.                     |
+
 ## Scripts
 
 | File              | Purpose                                                                       |
@@ -162,6 +205,8 @@ automatically by the code:
 | `setup_venv.sh`   | Create the `.venv`, install `requirements.txt`, and wire Isaac Sim + ROS 2 into it. |
 | `launch.sh`       | Activate the venv and start Isaac Sim (GUI) or run a standalone Python script. |
 | `run_collect.sh`  | Run the OpenVLA pick-and-place data collection (wrapper over `launch.sh`). See [OpenVLA data collection](#openvla-data-collection-vla_collect). |
+| `run_control.sh`  | Run the ROS 2 closed-loop control node (Isaac Sim side). See [ROS 2 control](#ros-2-control-vla_control). |
+| `run_teleop.sh`   | Run the keyboard/stdin action source for the control node. |
 | `requirements.txt`| Pip dependencies only (numpy, opencv-python, ultralytics, pillow). **Not** Isaac/ROS. |
 
 ## How the venv works

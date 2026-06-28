@@ -80,14 +80,26 @@ class CameraConfig:
     directly (the SigLIP/DINOv2 backbones expect 224)."""
 
     prim_path: str = "/World/observation_camera"
-    position: tuple[float, float, float] = (1.85, 0.0, 1.35)   # pulled back & up
-    look_at: tuple[float, float, float] = (0.45, 0.0, 0.05)    # workspace centre
+    # Head-on third-person view aimed at the workspace just above the table top.
+    # Calibrated with tools/preview_camera.py so the whole scene — the UR10 arm
+    # through its full reach, all four cubes, and the red pad — sits inside the
+    # 224x224 frame with margin (verified by projecting every object's world
+    # position to pixels; all land well inside 0..224).
+    position: tuple[float, float, float] = (1.70, 0.0, 1.20)   # pulled back & up
+    look_at: tuple[float, float, float] = (0.45, 0.0, 0.10)    # workspace, just above table
     resolution: tuple[int, int] = (224, 224)                   # (W, H) saved to disk
     # Render at a larger resolution then downsample to `resolution`. Rendering
     # directly at 224 puts DLSS below its 300px input floor, which upscales from
     # a tiny internal buffer and produces badly blurred frames; 512 avoids that.
     render_resolution: tuple[int, int] = (512, 512)
-    focal_length: float = 14.0          # wide-ish FOV so the workspace fits
+    # Focal length + aperture together set the FOV. The UR10 camera prim ships
+    # with a non-standard ~2.1mm horizontal aperture, which turned the old 14mm
+    # "wide" setting into an ~8 deg telephoto — the bug that left the arm and
+    # cubes out of frame. We force the standard 35mm-film aperture (20.955mm) in
+    # scene.reset() so focal_length behaves like a real lens: 24mm -> ~47 deg,
+    # wide enough to frame the whole workspace.
+    focal_length: float = 24.0
+    horizontal_aperture: float = 20.955     # standard 35mm-film horizontal aperture (mm)
     frequency: int = 30
     # Soft dome fill added AFTER the scene lights are tamed, so the whole
     # workspace (every cube + the red pad) is lit, not just the spot the robot's
@@ -99,6 +111,20 @@ class CameraConfig:
     # 0.03 exposes the matte table and cubes cleanly (calibrated via
     # tools/preview_camera.py). See PickPlaceScene.tame_scene_lights().
     light_intensity_scale: float = 0.03
+
+    # --- depth / pointcloud --------------------------------------------------
+    # When True the camera also attaches the distance_to_image_plane (depth) and
+    # pointcloud annotators, so the scene can expose per-frame metric depth and a
+    # 3D pointcloud alongside the RGB observation. This is what lets the control
+    # node publish /vla/observation/depth and /vla/observation/pointcloud for
+    # training depth- or geometry-conditioned models. RGB-only OpenVLA collection
+    # does not need these, but enabling them is cheap, so default on.
+    enable_depth: bool = True
+    enable_pointcloud: bool = True
+    # Pointcloud points are returned in the world frame (True) or the camera
+    # frame (False). World frame is convenient for fusing multiple views or
+    # reasoning about the table; camera frame matches a real RGB-D sensor.
+    pointcloud_world_frame: bool = True
 
 
 @dataclass(frozen=True)

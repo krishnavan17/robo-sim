@@ -192,10 +192,25 @@ class PickPlaceScene:
         if self.camera is not None:
             self.camera.initialize()
             self.camera.set_focal_length(self.cfg.camera.focal_length)
+            # The UR10 camera prim ships with a non-standard ~2.1mm horizontal
+            # aperture; without this the focal length acts as an extreme
+            # telephoto and the arm/cubes fall outside the frame. Force the
+            # standard 35mm-film aperture so focal_length sets a sane FOV.
+            self.camera.set_horizontal_aperture(self.cfg.camera.horizontal_aperture)
             # fStop = 0 disables depth-of-field, giving a sharp pinhole image.
             # A non-zero default fStop with the wrong focus distance is what made
             # the observation frames look smeared/out of focus.
             self.camera.set_lens_aperture(0.0)
+            # Attach the depth / pointcloud annotators (after initialize(), which
+            # creates the render product they hang off). distance_to_image_plane
+            # gives metric depth aligned with the RGB frame; the pointcloud
+            # annotator gives an (N,3) cloud. A few render steps are needed before
+            # they return valid data — the per-episode warm-up loop covers that.
+            cc = self.cfg.camera
+            if cc.enable_depth:
+                self.camera.add_distance_to_image_plane_to_frame()
+            if cc.enable_pointcloud:
+                self.camera.add_pointcloud_to_frame()
         # Build the scripted RMPFlow pick-place controller now that the
         # articulation exists and is initialised.
         self.controller = PickPlaceController(
@@ -246,6 +261,36 @@ class PickPlaceScene:
 
             rgb = np.asarray(Image.fromarray(rgb).resize((w, h), Image.BILINEAR))
         return rgb
+
+    def capture_depth(self) -> np.ndarray | None:
+        """Return per-pixel metric depth (distance to image plane) in metres.
+
+        Shape is the camera's *render* resolution (H, W) float32 — NOT downsampled
+        to the 224x224 RGB observation, since depth nearest-neighbour resampling
+        would corrupt edges; downstream consumers resize as they see fit. Returns
+        None if depth is disabled or the annotator has no frame yet (e.g. before
+        the renderer has warmed up).
+        """
+        if self.camera is None or not self.cfg.camera.enable_depth:
+            return None
+        depth = self.camera.get_depth()
+        if depth is None or depth.size == 0:
+            return None
+        return np.ascontiguousarray(depth).astype(np.float32)
+
+    def capture_pointcloud(self) -> np.ndarray | None:
+        """Return an (N, 3) float32 pointcloud from the camera.
+
+        Points are in the world frame when `camera.pointcloud_world_frame` is
+        True, else the camera frame. Returns None if pointcloud is disabled or no
+        valid frame is available yet.
+        """
+        if self.camera is None or not self.cfg.camera.enable_pointcloud:
+            return None
+        pts = self.camera.get_pointcloud(world_frame=self.cfg.camera.pointcloud_world_frame)
+        if pts is None or len(pts) == 0:
+            return None
+        return np.ascontiguousarray(pts).astype(np.float32).reshape(-1, 3)
 
     def end_effector_pose(self) -> tuple[np.ndarray, np.ndarray]:
         """World (position xyz, orientation wxyz) of the gripper end-effector."""
