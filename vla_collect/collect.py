@@ -42,6 +42,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="also save rollouts that don't end on the pad",
     )
+    p.add_argument(
+        "--publish",
+        action="store_true",
+        help="also mirror each recorded frame onto the vla_control ROS 2 topics",
+    )
     return p.parse_args(argv)
 
 
@@ -118,6 +123,13 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cfg = build_config(args)
 
+    # SimulationApp reads sys.argv directly and forwards anything it doesn't
+    # recognise to the underlying kit application. Our flags (e.g. --publish,
+    # which collides with a built-in kit flag that expects a value) would crash
+    # kit's arg parser, so scrub argv down to just the program name now that we
+    # have parsed what we need.
+    sys.argv = sys.argv[:1]
+
     # --- boot the simulator FIRST -------------------------------------------
     from isaacsim import SimulationApp
 
@@ -147,6 +159,19 @@ def main(argv: list[str]) -> int:
     scene.build()
     scene.reset()
 
+    # Optional ROS 2 mirror: re-publish every recorded frame onto the SAME topics
+    # vla_control serves, so a live consumer sees an identical stream from the
+    # scripted demos. rclpy/the publisher are imported only when --publish is set.
+    publisher = None
+    if args.publish:
+        import rclpy
+
+        from vla_collect.publisher import ObservationPublisher
+
+        rclpy.init()
+        publisher = ObservationPublisher(cfg)
+        print(">> Publishing observations on the /vla/observation/* topics")
+
     # Cube colour cycles deterministically across episodes so the dataset is
     # balanced over the four instructions.
     colors = [c.name for c in CUBES]
@@ -160,7 +185,10 @@ def main(argv: list[str]) -> int:
         instruction = cfg.instruction_for(color)
         rec = EpisodeRecorder(instruction=instruction, color=color, action_cfg=cfg.action)
 
-        success = run_episode(cfg, scene, rec, color, rng)
+        if publisher is not None:
+            publisher.publish_instruction(instruction)
+
+        success = run_episode(cfg, scene, rec, color, rng, publisher)
         rec.set_success(success)
 
         if success or not cfg.keep_only_successful:
@@ -181,11 +209,16 @@ def main(argv: list[str]) -> int:
             break
 
     print(f">> Done. Wrote {saved} episodes to {cfg.data_dir}")
+    if publisher is not None:
+        import rclpy
+
+        publisher.destroy()
+        rclpy.shutdown()
     sim_app.close()
     return 0
 
 
-def run_episode(cfg, scene, rec, color: str, rng) -> bool:
+def run_episode(cfg, scene, rec, color: str, rng, publisher=None) -> bool:
     """Run one scripted pick-and-place rollout, recording observations.
 
     Returns True if the target cube ends up on the red rectangle.
@@ -233,12 +266,22 @@ def run_episode(cfg, scene, rec, color: str, rng) -> bool:
             scene.robot.gripper.update()
             image = scene.capture_image()
             eef_pos, eef_quat = scene.end_effector_pose()
+            gripper_closed = scene.robot.gripper.is_closed()
             rec.add(
                 image=image,
                 eef_pos=eef_pos,
                 eef_quat_wxyz=eef_quat,
-                gripper_closed=scene.robot.gripper.is_closed(),
+                gripper_closed=gripper_closed,
             )
+            if publisher is not None:
+                publisher.publish_observation(
+                    image=image,
+                    eef_pos=eef_pos,
+                    eef_quat_wxyz=eef_quat,
+                    gripper_closed=gripper_closed,
+                    depth=scene.capture_depth(),
+                    pointcloud=scene.capture_pointcloud(),
+                )
 
         if scene.controller.is_done():
             break
