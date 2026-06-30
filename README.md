@@ -91,7 +91,17 @@ grounding, not just "pick the only object".
 ./run_collect.sh --num-episodes 200       # more data
 ./run_collect.sh --gui                     # watch in the viewport
 ./run_collect.sh --keep-failures           # also keep rollouts that miss the pad
+./run_collect.sh --publish                 # also mirror each frame onto the vla_control ROS 2 topics
 ```
+
+With `--publish`, every recorded frame is re-published onto the **same** topics
+`vla_control` serves — `/vla/observation/image`, `/vla/observation/state`,
+`/vla/observation/depth`, `/vla/observation/pointcloud`, and a latched
+`/vla/instruction` — reusing `vla_control/ros_interface.py` as the single source
+of truth for the topic names and wire format. A live consumer (RViz, a logger, a
+policy being evaluated against the scripted demos) sees a byte-for-byte identical
+stream whether it comes from the collector or from closed-loop control. Collection
+without `--publish` needs no ROS 2 environment.
 
 Each episode is written as `data/raw/episode_NNNNN.npz` (+ a `.json` sidecar):
 

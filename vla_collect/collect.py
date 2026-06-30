@@ -109,9 +109,15 @@ def configure_render_settings() -> None:
     settings.set("/rtx/post/dlss/execMode", 0)
     # No motion blur — it smears moving cubes/arm across the captured frame.
     settings.set("/rtx/post/motionblur/maxBlurDiameterFraction", 0.0)
+    # Synchronous rendering (asyncRendering=False) already guarantees each
+    # world.step(render=True) returns a complete frame before capture. waitIdle
+    # additionally forces a FULL GPU pipeline drain every step, which serialises
+    # CPU and GPU and leaves the GPU idle most of the frame (slow run, low GPU
+    # utilisation). Synchronous rendering alone is enough for valid captures, so
+    # leave waitIdle off and let the driver pipeline normally.
     settings.set("/app/asyncRendering", False)
     settings.set("/app/asyncRenderingLowLatency", False)
-    settings.set("/app/renderer/waitIdle", True)
+    settings.set("/app/renderer/waitIdle", False)
     # Disable histogram auto-exposure: it adapts to the bright sky and blows the
     # table-top out to white. Fixed exposure keeps frames stable across the run.
     settings.set("/rtx/post/histogram/enabled", False)
@@ -151,6 +157,16 @@ def main(argv: list[str]) -> int:
     from vla_collect.config import CUBES
     from vla_collect.recorder import EpisodeRecorder
     from vla_collect.scene import PickPlaceScene
+
+    # Depth + pointcloud annotators add GPU work to every rendered frame, but
+    # they are only consumed by the --publish mirror. For plain RGB collection
+    # they are pure render overhead, so disable them unless we're publishing.
+    if not args.publish and (cfg.camera.enable_depth or cfg.camera.enable_pointcloud):
+        import dataclasses
+
+        cfg.camera = dataclasses.replace(
+            cfg.camera, enable_depth=False, enable_pointcloud=False
+        )
 
     rng = cfg.rng()
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
@@ -236,9 +252,13 @@ def run_episode(cfg, scene, rec, color: str, rng, publisher=None) -> bool:
     # camera produces no frames (the blank-image / "annotator returned None" bug).
     ee_offset = np.array(cfg.action.ee_offset)
 
-    # Let physics settle and the camera warm up before recording.
-    for _ in range(int(0.3 / cfg.physics_dt)):
-        world.step(render=True)
+    # Let physics settle and the camera warm up before recording. Only the
+    # final few steps need rendering (to prime the camera annotators for the
+    # first capture); settling physics doesn't, so skip the RTX path on the
+    # rest — rendering is the expensive GPU stage.
+    warmup_steps = int(0.3 / cfg.physics_dt)
+    for i in range(warmup_steps):
+        world.step(render=(i >= warmup_steps - 3))
 
     cube_z = scene.ws.table_top_z + scene.ws.cube_size / 2.0
     px, py = scene.pad_target_xy()
@@ -259,10 +279,15 @@ def run_episode(cfg, scene, rec, color: str, rng, publisher=None) -> bool:
         )
         scene.robot.apply_action(action)
 
-        world.step(render=True)
+        # Render ONLY on steps we actually capture. We decimate physics down to
+        # ~20Hz data, so 2 of every 3 frames were rendered and thrown away —
+        # pure GPU waste. Advance physics with render=False on the dropped steps
+        # and run the RTX path only when this step's frame will be recorded.
+        capture = step % cfg.record_every_n_physics_steps == 0
+        world.step(render=capture)
 
         # Decimate: record every Nth physics step into the episode buffer.
-        if step % cfg.record_every_n_physics_steps == 0:
+        if capture:
             scene.robot.gripper.update()
             image = scene.capture_image()
             eef_pos, eef_quat = scene.end_effector_pose()
@@ -295,9 +320,10 @@ def run_episode(cfg, scene, rec, color: str, rng, publisher=None) -> bool:
               f"cube={np.round(cube,3)} eef={np.round(eef_pos,3)} "
               f"pad={np.round(scene.pad_target_xy(),3)}", file=sys.stderr)
 
-    # Let the cube settle, then evaluate success.
+    # Let the cube settle, then evaluate success. No frames are captured here,
+    # so physics-only steps (render=False) are enough — and much faster.
     for _ in range(int(0.5 / cfg.physics_dt)):
-        world.step(render=True)
+        world.step(render=False)
     return scene.is_on_pad(color)
 
 
