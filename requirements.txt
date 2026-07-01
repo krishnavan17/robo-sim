@@ -30,6 +30,10 @@ numpy>=2.3,<3
 # cv2 — used by ai_node_*.py for image processing / drawing.
 opencv-python==4.11.0.86
 
+# Pillow — image resize for the OpenVLA data collector (vla_collect) and the
+# dataset inspection / preview tooling under tools/.
+pillow>=10.0
+
 # --- perception / detection --------------------------------------------------
 # YOLO models used by the AI nodes (ai_node_yolo_opencv.py, ai_node_final_stable.py).
 # Pulls in torch/torchvision automatically.

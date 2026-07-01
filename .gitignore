@@ -1,0 +1,15 @@
+# Python venv (wired to system Isaac Sim + ROS 2 by setup_venv.sh)
+.venv/
+__pycache__/
+*.pyc
+
+# Collected datasets — large (images per step). Regenerate with run_collect.sh.
+data/
+*.npz
+
+# Isaac Sim zip / logs
+*.zip
+isaac-sim-vnc.log
+
+# Scratch
+/tmp/
